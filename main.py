@@ -146,35 +146,50 @@ def group_char_candidates(char_candidates, max_dy_ratio=0.3, max_dh_ratio=0.3, m
 
 def encontrar_placas_via_mser(imagem_original_color, imagem_cinza):
     # --- MSER Parameters (Tunable) ---
-    mser = cv2.MSER_create()  # Create the MSER object
-    
-    # Set parameters using setter methods
-    mser.setDelta(5)                # Default 5. Controls sensitivity.
-    mser.setMinArea(100)            # Min area of a character candidate. (e.g., 0.0001 * img_area up to 0.01 * img_area)
-    mser.setMaxArea(2000)           # Max area of a character candidate. (e.g., 0.05 * img_area)
-    mser.setMaxVariation(0.3)       # Default 0.25. Stability threshold.
-    mser.setMinDiversity(0.1)       # Default 0.2. Filters similar regions.
-    # mser.setPass2Only(False)      # Default is True, which runs a more refined version. False might be faster but less accurate.
+        # --- MSER Parameters (Tunable) ---
+    mser = cv2.MSER_create()
+    mser.setDelta(5)
+    mser.setMinArea(80)      # Slightly increased based on observation (chars are not extremely tiny)
+    mser.setMaxArea(1000)    # Reduced significantly to focus on char-sized regions
+    mser.setMaxVariation(0.25)# Default, can try reducing if too many unstable regions
+    mser.setMinDiversity(0.2) # Default, can try increasing if too many similar regions
     # --- End MSER Parameters ---
     
     regions, bboxes = mser.detectRegions(imagem_cinza)
+    temp_img_mser_bboxes = imagem_original_color.copy()
+    if bboxes is not None:
+        for (x_b, y_b, w_b, h_b) in bboxes:
+            cv2.rectangle(temp_img_mser_bboxes, (x_b, y_b), (x_b + w_b, y_b + h_b), (0, 0, 255), 1)
+    plt.figure(figsize=(10,7))
+    plt.title("All Raw MSER Bounding Boxes")
+    plt.imshow(cv2.cvtColor(temp_img_mser_bboxes, cv2.COLOR_BGR2RGB))
+    plt.show()
     if bboxes is None or len(bboxes) == 0:
         print("MSER found no regions or bboxes.")
         return []
 
     # --- Character Filtering Parameters (Tunable) ---
+    # img_h, img_w = imagem_cinza.shape[:2]
+    # min_char_h_abs = int(img_h * 0.02) if img_h * 0.02 > 10 else 10 # e.g. 2% of image height, min 10px
+    # max_char_h_abs = int(img_h * 0.15) if img_h * 0.15 < 100 else 100 # e.g. 15% of image height, max 100px
+    # min_aspect_char, max_aspect_char = 0.1, 1.2 
     img_h, img_w = imagem_cinza.shape[:2]
-    min_char_h_abs = int(img_h * 0.02) if img_h * 0.02 > 10 else 10 # e.g. 2% of image height, min 10px
-    max_char_h_abs = int(img_h * 0.15) if img_h * 0.15 < 100 else 100 # e.g. 15% of image height, max 100px
-    min_aspect_char, max_aspect_char = 0.1, 1.2 
+    # For Placa1.jpg (approx dimensions: image 866h x 1200w, plate char height ~30px)
+    min_char_h_abs = 20 # Based on visual inspection of plate characters in Placa1
+    max_char_h_abs = 50 # Based on visual inspection
+    min_aspect_char, max_aspect_char = 0.15, 1.0 # Stricter max aspect ratio
     # --- End Character Filtering Parameters ---
     
     char_candidates = filter_char_candidates(bboxes, min_char_h_abs, max_char_h_abs, min_aspect_char, max_aspect_char)
     if not char_candidates: print("No character candidates after MSER filtering."); return []
 
     # --- Grouping Parameters (Tunable) ---
-    max_dy_ratio_grp = 0.4; max_dh_ratio_grp = 0.4; max_spacing_ratio_grp = 1.8 
-    min_chars_plate, max_chars_plate = 5, 8
+    # max_dy_ratio_grp = 0.4; max_dh_ratio_grp = 0.4; max_spacing_ratio_grp = 1.8 
+    # min_chars_plate, max_chars_plate = 5, 8
+    max_dy_ratio_grp = 0.25      # Stricter vertical alignment
+    max_dh_ratio_grp = 0.25      # Stricter height similarity
+    max_spacing_ratio_grp = 0.8 # Significantly reduced horizontal spacing tolerance
+    min_chars_plate, max_chars_plate = 6, 8 # Plates usually have 7, allow some flexibility
     # --- End Grouping Parameters ---
 
     plate_groups = group_char_candidates(char_candidates, max_dy_ratio_grp, max_dh_ratio_grp, 
