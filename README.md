@@ -1,168 +1,206 @@
-# Reconhecimento de Placas Veiculares com OpenCV e Tesseract OCR
+# Reconhecimento Avançado de Placas Veiculares com OpenCV e Tesseract OCR
 
-Este projeto demonstra um programa em Python que utiliza a biblioteca OpenCV para pré-processar imagens de veículos e o Tesseract OCR para extrair o texto de suas placas.
+Este projeto implementa um sistema de Reconhecimento Óptico de Caracteres (OCR) para placas veiculares utilizando Python, OpenCV para processamento de imagem e Tesseract OCR para extração de texto. O script `main.py` oferece múltiplos modos de detecção e processamento para lidar com diversas qualidades de imagem e cenários.
 
-## Funcionalidades
+## Funcionalidades Principais
 
-- Carrega imagens de veículos (carros ou motos).
-- Realiza pré-processamento na imagem para realçar a placa:
+- **Múltiplos Modos de Detecção**:
+    1.  **`crop` (MSER com Auto-Ajuste)**: Utiliza a técnica MSER (Maximally Stable Extremal Regions) para identificar regiões candidatas a caracteres, agrupa-os para formar placas e aplica OCR nos recortes. Tenta automaticamente 3 configurações de parâmetros MSER diferentes para otimizar a detecção.
+    2.  **`nocrop` (OCR na Imagem Inteira)**: Aplica pré-processamento global na imagem e tenta realizar o OCR diretamente na imagem inteira, sem um recorte específico da placa.
+    3.  **`sliding_window` (Janela Deslizante com Multiprocessamento)**: Varre a imagem com janelas de diferentes tamanhos e proporções, aplicando OCR em cada "patch". Utiliza multiprocessamento para acelerar a varredura.
+    4.  **`all`**: Executa todos os três modos acima sequencialmente para cada imagem.
+- **Pré-processamento de Imagem**:
     - Conversão para escala de cinza.
-    - Aplicação de filtro Gaussiano para suavização.
-    - Binarização adaptativa para segmentação.
-- Tenta detectar a região da placa utilizando análise de contornos e heurísticas de forma e tamanho.
-- Recorta a região da placa detectada.
-- Aplica OCR na região da placa para extrair o texto.
-- Exibe o texto extraído no console.
-- Salva a imagem original com a placa detectada destacada (usando o contorno aproximado) e o texto extraído sobreposto.
+    - Aplicação de filtro Bilateral para redução de ruído preservando bordas.
+    - Binarização adaptativa.
+    - Melhoria de contraste com CLAHE (Contrast Limited Adaptive Histogram Equalization), especialmente no modo MSER.
+- **Pós-processamento de OCR**:
+    - Validação de formatos de placa (padrão antigo e Mercosul) usando expressões regulares.
+    - Tentativas de correção de caracteres com base em um dicionário de substituições comuns (e.g., 'O' por '0', 'I' por '1').
+    - Geração de múltiplas possibilidades de placas a partir de leituras ambíguas.
+- **Saída Detalhada**:
+    - Salva imagens intermediárias do processo de detecção e OCR.
+    - Gera um gráfico comparativo (usando Matplotlib) mostrando a imagem original, a imagem processada para detecção, o recorte da placa (se aplicável) e o recorte binarizado para OCR.
+    - Imprime o texto da placa extraída no console.
+- **Configurabilidade**:
+    - Caminho para o executável do Tesseract.
+    - Pasta de entrada para as imagens.
+    - Seleção do modo de processamento via argumentos de linha de comando.
 
-## Instalação e Configuração
-
-### 1. Tesseract OCR
-
-Você precisará instalar o Tesseract OCR em seu sistema.
-
--   **Windows**:
-    -   Baixe o instalador em [Tesseract at UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki).
-    -   Durante a instalação, certifique-se de selecionar os pacotes de idiomas desejados (ex: "Portuguese" - `por`).
-    -   **Importante**: Adicione o diretório de instalação do Tesseract (e.g., `C:\Program Files\Tesseract-OCR`) à variável de ambiente PATH do sistema.
-    -   Se, mesmo após adicionar ao PATH, o script não encontrar o Tesseract, você pode descomentar e ajustar a linha no início do script `main.py`:
-        ```python
-        # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-        ```
-
--   **Linux (Debian/Ubuntu)**:
-    ```bash
-    sudo apt update
-    sudo apt install tesseract-ocr tesseract-ocr-por  # 'por' para Português
-    ```
-
--   **macOS (usando Homebrew)**:
-    ```bash
-    brew install tesseract tesseract-lang
-    # Para instalar o pacote de idioma português especificamente (se não incluído por tesseract-lang):
-    # brew install tesseract-data-por 
-    ```
-
-Após a instalação, verifique se o Tesseract está funcionando no terminal com o comando: `tesseract --version`.
-
-### 2. Dependências Python
-
-Recomenda-se criar um ambiente virtual para o projeto.
-
-```bash
-# Opcional: criar e ativar um ambiente virtual
-python -m venv venv
-# No Windows:
-# venv\Scripts\activate
-# No Linux/macOS:
-# source venv/bin/activate
-```
-
-Clone este repositório (ou crie a estrutura de pastas manualmente) e instale as bibliotecas Python listadas no arquivo `requirements.txt`:
-
-```bash
-pip install -r requirements.txt
-```
-
-O conteúdo do `requirements.txt` deve ser:
-```
-opencv-python
-pytesseract
-numpy
-```
-
-Se preferir, instale manualmente:
-```bash
-pip install opencv-python pytesseract numpy
-```
-
-## Estrutura do Projeto
-
-Certifique-se de que seu projeto tenha a seguinte estrutura:
+## Estrutura do Projeto (Sugerida)
 
 ```
-seu_projeto_license_plate_ocr/
-├── main.py                 # Script principal
-├── requirements.txt        # Dependências Python
-├── images/                 # Pasta para colocar as imagens de entrada (VOCÊ DEVE CRIAR ESTA PASTA)
-│   ├── placa_carro1.jpg    # Exemplo de imagem
-│   ├── placa_moto1.png     # Exemplo de imagem
-│   └── ...                 # Suas 5 imagens de teste
-├── processed_images/       # Pasta onde as imagens processadas são salvas (criada automaticamente)
-│   ├── placa_carro1_processed.jpg
+OCR/
+├── main.py                     # O script principal do projeto
+├── images/                     # Pasta para colocar as imagens de entrada
+│   ├── carro1.jpg
 │   └── ...
-└── README.md               # Este arquivo
+├── output_images_mser_crop_tuned/ # Saída do modo 'crop'
+│   └── carro1/
+│       ├── success_config1_stricter/
+│       │    ├── carro1_00_fig_mser_crop.png
+│       │    ├── carro1_01_original.png
+│       │    └── ...
+│       └── tuning_final_attempt/ (se nenhuma config teve sucesso)
+├── output_images_no_crop_v2/    # Saída do modo 'nocrop'
+│   └── carro1/
+│       ├── carro1_00_fig_nocrop.png
+│       └── ...
+├── output_images_sliding_window_mp_v2/ # Saída do modo 'sliding_window'
+│   └── carro1/
+│       ├── carro1_00_fig_sliding_window.png
+│       └── ...
+└── README.md                   # Este arquivo
 ```
 
-## Como Usar
+## Dependências
 
-1.  **Crie uma pasta chamada `images`** no mesmo diretório do script `main.py`.
-2.  Coloque as 5 imagens das placas que você deseja processar dentro da pasta `images/`.
-3.  Execute o script Python a partir do diretório raiz do projeto:
-    ```bash
-    python main.py
+- Python 3.x
+- OpenCV (`opencv-python`)
+- Pytesseract (`pytesseract`)
+- NumPy (`numpy`)
+- Matplotlib (`matplotlib`)
+- Tesseract OCR (instalado no sistema)
+
+## Instalação
+
+1.  **Instalar Tesseract OCR**:
+    -   **Windows**: Baixe o instalador em Tesseract at UB Mannheim. Durante a instalação, adicione os pacotes de idioma desejados (ex: `por` para Português, `eng` para Inglês). **Importante**: Adicione o diretório de instalação do Tesseract (e.g., `C:\Program Files\Tesseract-OCR`) à variável de ambiente PATH.
+    -   **Linux (Debian/Ubuntu)**: `sudo apt update && sudo apt install tesseract-ocr tesseract-ocr-por tesseract-ocr-eng`
+    -   **macOS (Homebrew)**: `brew install tesseract tesseract-lang`
+    Verifique a instalação com `tesseract --version`.
+
+2.  **Configurar Caminho do Tesseract no Script**:
+    No arquivo `main.py`, ajuste a linha se necessário:
+    ```python
+    pytesseract.pytesseract.tesseract_cmd = r'C:/Program Files/Tesseract-OCR/tesseract.exe'
     ```
-4.  O programa imprimirá o texto extraído de cada placa no console.
-5.  As imagens processadas, com a placa destacada e o texto sobreposto, serão salvas na pasta `processed_images/`. Os caminhos absolutos dos arquivos salvos serão exibidos no console.
 
-## Detalhes do Processamento
+3.  **Instalar Bibliotecas Python**:
+    Recomenda-se o uso de um ambiente virtual.
+    ```bash
+    python -m venv venv
+    # Windows: venv\Scripts\activate
+    # Linux/macOS: source venv/bin/activate
+    pip install opencv-python pytesseract numpy matplotlib
+    ```
 
-O script segue as seguintes etapas principais para cada imagem:
+## Como Executar
 
-1.  **Carregamento da Imagem**: `cv2.imread()`.
-2.  **Pré-processamento da Imagem Completa**:
-    -   **Conversão para Escala de Cinza**: `cv2.cvtColor()` - Reduz a complexidade.
-    -   **Suavização Gaussiana**: `cv2.GaussianBlur()` - Reduz ruído.
-    -   **Binarização Adaptativa**: `cv2.adaptiveThreshold()` - Cria uma imagem binária (preto e branco) lidando bem com variações de iluminação. `THRESH_BINARY_INV` é usado para obter objetos brancos em fundo preto, o que pode facilitar a detecção de contornos.
-3.  **Detecção da Região da Placa**:
-    -   **Encontrar Contornos**: `cv2.findContours()` na imagem binarizada.
-    -   **Filtragem de Contornos**: Itera sobre os contornos e aplica filtros baseados em:
-        -   **Forma Quadrilateral**: `cv2.approxPolyDP()` para verificar se o contorno se assemelha a um quadrilátero (placas são retangulares).
-        -   **Proporção (Aspect Ratio)**: `largura / altura` do retângulo delimitador. Filtra para proporções típicas de placas (e.g., entre 1.0 e 5.0).
-        -   **Área**: Filtra contornos muito pequenos ou muito grandes.
-    -   **Seleção**: O contorno que melhor se encaixa (geralmente o maior que passa pelos filtros) é escolhido.
-4.  **Recorte e Pré-processamento da ROI (Região de Interesse) da Placa para OCR**:
-    -   **Recorte**: A região da placa é recortada da imagem em tons de cinza original, com uma pequena margem.
-    -   **Redimensionamento (Upscaling)**: A ROI é aumentada (`cv2.resize` com `cv2.INTER_CUBIC`) para melhorar a precisão do OCR, visando uma altura mínima para os caracteres.
-    -   **Binarização da ROI**: A ROI redimensionada é binarizada usando o método de Otsu (`cv2.THRESH_BINARY | cv2.THRESH_OTSU`).
-    -   **Garantir Texto Preto em Fundo Branco**: O Tesseract funciona melhor com texto preto sobre fundo branco. Se a binarização resultar em texto branco sobre fundo preto (detectado pela média de intensidade de pixels), a imagem é invertida (`cv2.bitwise_not()`).
-5.  **Extração de Texto com Tesseract OCR**:
-    -   `pytesseract.image_to_string()` é chamado na ROI processada.
-    -   **Configuração**: `custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'`
-        -   `--oem 3`: Motor LSTM.
-        -   `--psm 7`: Trata a imagem como uma única linha de texto.
-        -   `tessedit_char_whitelist`: Crucial para restringir o OCR aos caracteres válidos em placas.
-    -   **Pós-processamento do Texto**: Remove caracteres não alfanuméricos e converte para maiúsculas.
-6.  **Exibição e Salvamento**:
-    -   O texto extraído é impresso.
-    -   O contorno da placa detectada é desenhado na imagem original.
-    -   O texto extraído é escrito acima da placa.
-    -   A imagem resultante é salva na pasta `processed_images/`.
+1.  Crie uma pasta chamada `images` no mesmo diretório do `main.py` e coloque suas imagens de placas nela.
+2.  Execute o script a partir do terminal, especificando o modo desejado:
 
-## Resultados Esperados (Preencha com seus testes)
+    ```bash
+    python c:\Users\anton\Documents\GitHub\OCR\main.py --mode [MODO] --images_folder [PASTA_IMAGENS]
+    ```
 
-Você deve testar o programa com 5 imagens diferentes e documentar os resultados aqui. Para cada imagem:
+    **Argumentos**:
+    -   `--mode`: Especifica o modo de processamento. Opções:
+        -   `crop` (padrão): Detecção MSER com 3 configurações de ajuste.
+        -   `nocrop`: OCR na imagem inteira.
+        -   `sliding_window`: OCR com janela deslizante e multiprocessamento.
+        -   `all`: Executa todos os modos acima.
+    -   `--images_folder`: Nome da pasta contendo as imagens de entrada (padrão: `images`).
 
-**Imagem 1: `images/NOME_DA_SUA_IMAGEM_1.ext`**
-- Placa Detectada: (Sim/Não/Parcialmente)
-- Texto Extraído: `TEXTO_AQUI` (ou "N/A" se não detectado/lido)
-- Imagem Processada: `processed_images/NOME_DA_SUA_IMAGEM_1_processed.ext`
-  <!-- Opcional: !Descrição da Imagem Processada 1 -->
+    **Exemplos**:
+    ```bash
+    # Executar modo 'crop' (padrão) na pasta 'images' (padrão)
+    python c:\Users\anton\Documents\GitHub\OCR\main.py
 
-**Imagem 2: `images/NOME_DA_SUA_IMAGEM_2.ext`**
-- Placa Detectada: ...
-- Texto Extraído: ...
-- Imagem Processada: ...
+    # Executar modo 'sliding_window'
+    python c:\Users\anton\Documents\GitHub\OCR\main.py --mode sliding_window
 
-**(Continue para as 5 imagens)**
+    # Executar todos os modos em imagens na pasta 'minhas_placas'
+    python c:\Users\anton\Documents\GitHub\OCR\main.py --mode all --images_folder minhas_placas
+    ```
+
+3.  Os resultados (texto extraído, imagens processadas e gráficos) serão salvos em subpastas dentro de `output_images_mser_crop_tuned/`, `output_images_no_crop_v2/`, ou `output_images_sliding_window_mp_v2/`, dependendo do modo.
+
+## Detalhamento dos Modos de Processamento
+
+### 1. Modo `crop` (Detecção MSER com Auto-Ajuste)
+   - **Orquestrador**: `detectar_placa_com_mser_crop_tuned`
+   - **Lógica**:
+     1.  A imagem original é carregada e convertida para escala de cinza (`processar_imagem_globalmente`).
+     2.  O script itera sobre uma lista pré-definida de 3 configurações de parâmetros (`parameter_configurations`) para o MSER e funções auxiliares.
+     3.  Para cada configuração:
+         - `encontrar_placas_via_mser_param`:
+           - Aplica CLAHE para realce de contraste na imagem em cinza.
+           - Calcula dinamicamente os tamanhos mínimo e máximo de caracteres e áreas MSER com base nas dimensões da imagem e nos parâmetros da configuração atual.
+           - Configura e executa o `cv2.MSER_create()`.
+           - `filter_char_candidates_param`: Filtra as regiões MSER detectadas, mantendo aquelas que se assemelham a caracteres (baseado em altura e aspect ratio definidos na configuração).
+           - `group_char_candidates_param`: Agrupa os caracteres candidatos em linhas horizontais que poderiam formar uma placa (baseado em alinhamento vertical, similaridade de altura, espaçamento e número de caracteres, conforme a configuração).
+           - Recorta as regiões de placa candidatas da imagem original colorida e da imagem em cinza (após CLAHE e binarização adaptativa), aplicando um padding.
+     4.  `aplicar_ocr_aos_recortes`:
+         - Para cada recorte de placa candidato:
+           - Redimensiona o recorte se a altura for muito pequena, visando uma altura de caractere ideal para OCR.
+           - Tenta o OCR com Tesseract usando os idiomas Português (`por`) e Inglês (`eng`), com `psm 7` (linha única de texto).
+           - Valida o texto OCRizado contra padrões de placa (antigo e Mercosul).
+           - Se não houver correspondência direta, tenta correções de caracteres e gera novas possibilidades.
+         - Retorna o primeiro resultado válido encontrado, ou o melhor palpite.
+     5.  Se uma placa válida é encontrada com uma configuração, o processo de ajuste para aquela imagem para, e o resultado é salvo.
+     6.  Se nenhuma das 3 configurações produzir uma placa válida, o resultado da última tentativa (ou uma mensagem de falha) é salvo.
+   - **Saída**: Imagens originais, processadas, recortes de placa e gráfico comparativo são salvos em `output_images_mser_crop_tuned/[nome_imagem]/[success_nome_config_OU_tuning_final_attempt]/`.
+
+### 2. Modo `nocrop` (OCR na Imagem Inteira)
+   - **Orquestrador**: `detectar_placa_sem_recorte`
+   - **Lógica**:
+     1.  `processar_imagem_globalmente`: A imagem é convertida para escala de cinza, suavizada com filtro bilateral e binarizada com limiarização adaptativa.
+     2.  `aplicar_ocr_na_imagem_inteira`: O Tesseract OCR é aplicado diretamente na imagem binarizada global.
+         - Tenta com idiomas Português e Inglês, usando `psm 6` (assume um bloco uniforme de texto).
+         - Valida o resultado contra padrões de placa.
+   - **Saída**: Imagem original, imagem processada para OCR e gráfico são salvos em `output_images_no_crop_v2/[nome_imagem]/`.
+
+### 3. Modo `sliding_window` (Janela Deslizante com Multiprocessamento)
+   - **Orquestrador**: `detectar_placa_via_janela_deslizante`
+   - **Lógica**:
+     1.  `encontrar_melhor_resultado_via_janela_deslizante`:
+         - Define uma série de configurações de janelas (largura, altura, passos de deslize).
+         - Para cada configuração, gera "patches" (recortes) da imagem em escala de cinza.
+         - Cria uma lista de tarefas, onde cada tarefa é processar um patch.
+     2.  `multiprocessing.Pool`: Distribui as tarefas de processamento de patches entre múltiplos processos da CPU.
+     3.  `process_patch_task` (executado por cada processo filho):
+         - Para cada patch:
+           - Binariza com `cv2.THRESH_OTSU`.
+           - Verifica a densidade de pixels de primeiro plano para descartar patches vazios.
+           - Redimensiona o patch se necessário para otimizar a altura dos caracteres para OCR.
+           - Aplica Tesseract OCR (Português e Inglês, `psm 7`).
+           - Valida e tenta correções.
+         - Retorna o resultado do patch com um "score" de confiança (1.0 para correspondência direta, 0.8 para sugestão corrigida).
+     4.  Os resultados de todos os patches são coletados, e o de maior score é selecionado.
+   - **Saída**: Imagem original com retângulo na melhor região, melhor patch colorido, melhor patch binarizado e gráfico são salvos em `output_images_sliding_window_mp_v2/[nome_imagem]/`.
+
+## Funções Chave Adicionais
+
+- **`encontrar_placa(text_string)` e `encontrar_placa_mercosul(text_string)`**: Utilizam expressões regulares (`re`) para validar se uma string corresponde aos formatos de placa padrão antigo ([A-Z]{3}\d{4}) ou Mercosul ([A-Z]{3}[0-9][A-Z0-9][0-9]{2}).
+- **`substituir_letras_por_numeros_para_recorte(ultimos_caracteres)` e `gerar_possibilidades_mercosul_para_recorte(value)`**: Funções sofisticadas para gerar variações de uma string de placa detectada, trocando caracteres visualmente similares (definidos em `LETRAS_NUMEROS`) para aumentar a chance de encontrar uma correspondência válida. São usadas principalmente no pós-processamento do OCR.
+- **`exibir_e_salvar_resultado_*`**: Funções responsáveis por gerar os gráficos com `matplotlib` e salvar todas as imagens de saída para cada modo.
+
+## Dicionário `LETRAS_NUMEROS`
+
+Este dicionário é crucial para o pós-processamento do OCR. Ele mapeia caracteres que o Tesseract frequentemente confunde:
+```python
+LETRAS_NUMEROS = {
+    'I': '1', 'O': '0', 'Q': '0', 'Z': '2', 'S': ['5', '9'], 'G': '6',
+    'B': '8', 'A': '4', 'E': '8', 'T': '7', 'Y': '7', 'L': '1',
+    # ... e vice-versa para números que podem ser letras
+    '0': 'O', '1': 'I', '2': 'Z', '4': 'A', '5': 'S', '8': 'B'
+}
+```
+Isso permite que o script tente "corrigir" leituras imperfeitas do Tesseract, especialmente para os últimos 4 caracteres da placa antiga ou para o 5º caractere da placa Mercosul.
 
 ## Limitações e Melhorias Futuras
 
--   A detecção de placas é baseada em heurísticas e pode falhar com ângulos difíceis, iluminação ruim, placas danificadas/sujas, ou múltiplos objetos retangulares.
--   A precisão do OCR depende da qualidade da segmentação e do pré-processamento da ROI.
--   **Melhorias Possíveis**:
-    -   Usar detectores de objetos mais avançados (Haar Cascades, HOG+SVM, YOLO, SSD).
-    -   Implementar correção de perspectiva para placas inclinadas.
-    -   Ajustar dinamicamente os parâmetros de pré-processamento.
-    -   Treinar um modelo Tesseract específico para fontes de placas.
-    -   Validar o formato do texto extraído contra padrões de placas conhecidos.
+- **Sensibilidade a Parâmetros (MSER)**: O modo MSER, mesmo com 3 configurações, ainda é sensível aos parâmetros. Imagens com iluminação muito variada, ângulos extremos, ou placas sujas/danificadas podem exigir ajuste fino adicional ou um número maior de configurações de teste. A versão anterior com geração procedural de parâmetros (se implementada) poderia ser mais robusta aqui.
+- **Velocidade (Sliding Window)**: Apesar do multiprocessamento, o modo de janela deslizante pode ser lento para imagens grandes devido ao grande número de patches a serem processados.
+- **Qualidade do OCR**: A precisão final depende muito da qualidade da imagem de entrada e da eficácia do pré-processamento e segmentação da placa.
+- **Melhorias Possíveis**:
+    - Implementar um detector de placas mais robusto baseado em aprendizado de máquina (e.g., Haar Cascades, HOG+SVM, ou modelos mais modernos como YOLO, SSD, Faster R-CNN) antes de aplicar o MSER ou OCR.
+    - Adicionar correção de perspectiva para placas inclinadas.
+    - Treinar um modelo Tesseract específico para as fontes usadas em placas brasileiras.
+    - Desenvolver um sistema de pontuação mais sofisticado para os candidatos a placa, considerando não apenas o texto OCRizado, mas também características geométricas.
+    - Refinar a lógica de geração procedural de parâmetros para o modo MSER, talvez com uma busca mais inteligente (e.g., otimização bayesiana) em vez de amostragem aleatória se o espaço de parâmetros for muito grande.
+
+## Conclusão
+
+O `main.py` é um script abrangente que explora diferentes abordagens para o desafio de reconhecimento de placas veiculares. Sua modularidade em modos de processamento e as tentativas de correção de OCR o tornam uma ferramenta poderosa e um excelente ponto de partida para estudos e desenvolvimentos futuros na área.
