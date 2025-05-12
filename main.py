@@ -144,69 +144,103 @@ def group_char_candidates(char_candidates, max_dy_ratio=0.3, max_dh_ratio=0.3, m
                     potential_plates.append({'chars': current_line, 'bbox': (plate_x, plate_y, plate_w, plate_h)})
     return potential_plates
 
-def encontrar_placas_via_mser(imagem_original_color, imagem_cinza):
-    # --- MSER Parameters (Tunable) ---
-        # --- MSER Parameters (Tunable) ---
+# In encontrar_placas_via_mser:
+
+def encontrar_placas_via_mser(imagem_original_color, imagem_cinza_input): # imagem_cinza_input is the input gray
+    img_h, img_w = imagem_cinza_input.shape[:2]
+
+    # 1. Contrast Enhancement (CLAHE)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    imagem_cinza_enhanced = clahe.apply(imagem_cinza_input)
+    # You might want to display imagem_cinza_enhanced to see its effect
+
+    # 2. Dynamic Parameter Calculation
+    # These percentages are heuristics and NEED TUNING based on your typical images
+    est_char_h_min_rel = 0.020 # Min char height relative to image height
+    est_char_h_max_rel = 0.080 # Max char height relative to image height
+    abs_min_char_h_px = 15    # Absolute minimum pixel height for a char
+    abs_max_char_h_px = 80    # Absolute maximum pixel height for a char
+
+    min_char_h_abs = max(abs_min_char_h_px, int(img_h * est_char_h_min_rel))
+    max_char_h_abs = min(abs_max_char_h_px, int(img_h * est_char_h_max_rel))
+    if min_char_h_abs >= max_char_h_abs : # Safety if image is too small or percentages are off
+        min_char_h_abs = abs_min_char_h_px
+        max_char_h_abs = abs_max_char_h_px
+
+
+    # Estimate MSER Area based on dynamic character height and typical aspect ratio
+    # Char aspect ratio (w/h) typically 0.2 (for 'I') to 1.0 (for 'W', 'M')
+    mser_min_area = int((min_char_h_abs**2) * 0.15) 
+    mser_min_area = max(30, mser_min_area) # Absolute floor for min area
+    
+    mser_max_area = int((max_char_h_abs**2) * 1.2) 
+    # Cap max area to avoid huge regions, e.g., 5% of total image area as an extreme upper bound
+    mser_max_area = min(mser_max_area, int(img_w * img_h * 0.05)) 
+    mser_max_area = max(mser_max_area, mser_min_area + 100) # Ensure max > min
+
+
+    # --- MSER Parameters (Now more dynamic) ---
     mser = cv2.MSER_create()
-    mser.setDelta(5)
-    mser.setMinArea(80)      # Slightly increased based on observation (chars are not extremely tiny)
-    mser.setMaxArea(1000)    # Reduced significantly to focus on char-sized regions
-    mser.setMaxVariation(0.25)# Default, can try reducing if too many unstable regions
-    mser.setMinDiversity(0.2) # Default, can try increasing if too many similar regions
+    mser.setDelta(5) 
+    mser.setMinArea(mser_min_area)
+    mser.setMaxArea(mser_max_area) 
+    mser.setMaxVariation(0.25) # Can tune this, e.g. 0.2 to 0.3
+    mser.setMinDiversity(0.2)  # Can tune this, e.g. 0.1 to 0.3
     # --- End MSER Parameters ---
     
-    regions, bboxes = mser.detectRegions(imagem_cinza)
-    temp_img_mser_bboxes = imagem_original_color.copy()
-    if bboxes is not None:
-        for (x_b, y_b, w_b, h_b) in bboxes:
-            cv2.rectangle(temp_img_mser_bboxes, (x_b, y_b), (x_b + w_b, y_b + h_b), (0, 0, 255), 1)
-    plt.figure(figsize=(10,7))
-    plt.title("All Raw MSER Bounding Boxes")
-    plt.imshow(cv2.cvtColor(temp_img_mser_bboxes, cv2.COLOR_BGR2RGB))
-    plt.show()
+    # Detect regions on the enhanced grayscale image
+    regions, bboxes = mser.detectRegions(imagem_cinza_enhanced) # Use enhanced image
     if bboxes is None or len(bboxes) == 0:
         print("MSER found no regions or bboxes.")
         return []
 
-    # --- Character Filtering Parameters (Tunable) ---
-    # img_h, img_w = imagem_cinza.shape[:2]
-    # min_char_h_abs = int(img_h * 0.02) if img_h * 0.02 > 10 else 10 # e.g. 2% of image height, min 10px
-    # max_char_h_abs = int(img_h * 0.15) if img_h * 0.15 < 100 else 100 # e.g. 15% of image height, max 100px
-    # min_aspect_char, max_aspect_char = 0.1, 1.2 
-    img_h, img_w = imagem_cinza.shape[:2]
-    # For Placa1.jpg (approx dimensions: image 866h x 1200w, plate char height ~30px)
-    min_char_h_abs = 20 # Based on visual inspection of plate characters in Placa1
-    max_char_h_abs = 50 # Based on visual inspection
-    min_aspect_char, max_aspect_char = 0.15, 1.0 # Stricter max aspect ratio
+    # --- Character Filtering Parameters (Using dynamic char_h) ---
+    # min_aspect_char, max_aspect_char are less dependent on overall image scale
+    min_aspect_char, max_aspect_char = 0.15, 1.2 
     # --- End Character Filtering Parameters ---
     
-    char_candidates = filter_char_candidates(bboxes, min_char_h_abs, max_char_h_abs, min_aspect_char, max_aspect_char)
+    char_candidates = filter_char_candidates(bboxes, min_char_h_abs, max_char_h_abs, 
+                                             min_aspect_char, max_aspect_char)
     if not char_candidates: print("No character candidates after MSER filtering."); return []
 
-    # --- Grouping Parameters (Tunable) ---
-    # max_dy_ratio_grp = 0.4; max_dh_ratio_grp = 0.4; max_spacing_ratio_grp = 1.8 
-    # min_chars_plate, max_chars_plate = 5, 8
-    max_dy_ratio_grp = 0.25      # Stricter vertical alignment
-    max_dh_ratio_grp = 0.25      # Stricter height similarity
-    max_spacing_ratio_grp = 0.8 # Significantly reduced horizontal spacing tolerance
-    min_chars_plate, max_chars_plate = 6, 8 # Plates usually have 7, allow some flexibility
+    # --- Grouping Parameters (Ratios should be more stable across scales than absolute px values) ---
+    max_dy_ratio_grp = 0.3      # Max Y-center diff ratio (to avg char height of the line)
+    max_dh_ratio_grp = 0.3      # Max height diff ratio
+    max_spacing_ratio_grp = 1.0 # Max horizontal spacing ratio (to avg char height of the line)
+    min_chars_plate, max_chars_plate = 6, 8 # Allow 6 to catch cases where one char is missed
     # --- End Grouping Parameters ---
 
     plate_groups = group_char_candidates(char_candidates, max_dy_ratio_grp, max_dh_ratio_grp, 
-                                        max_spacing_ratio_grp, min_chars_plate, max_chars_plate, min_char_h_abs)
-    if not plate_groups: print("No plate groups formed from character candidates."); return []
-    
+                                        max_spacing_ratio_grp, min_chars_plate, max_chars_plate, 
+                                        min_char_h_abs) # Pass min_char_h_abs for reference in plate_h check
+
+    # ... (rest of the function: cropping, binarizing crop, returning list for OCR) ...
+    # The binarization of the crop might also benefit from CLAHE on plate_crop_gray before thresholding
+    # Example for crop binarization:
+    #   plate_crop_gray_enhanced = clahe.apply(plate_crop_gray) # Use the same CLAHE object or a new one
+    #   plate_crop_bin = cv2.adaptiveThreshold(plate_crop_gray_enhanced, ...)
+
     possiveis_placas_para_ocr = []
     for group in plate_groups:
         x, y, w, h = group['bbox']
-        padding = 5 
+        padding = int(min(w,h) * 0.1) # Dynamic padding: 10% of min dimension of group
+        padding = max(3, padding) # Min 3px padding
+        padding = min(10,padding) # Max 10px padding
+
         x1=max(0,x-padding); y1=max(0,y-padding); x2=min(img_w,x+w+padding); y2=min(img_h,y+h+padding)
-        if (x2 - x1) < 20 or (y2 - y1) < 10: continue
+        if (x2 - x1) < 20 or (y2 - y1) < 10: continue 
         plate_crop_color = imagem_original_color[y1:y2, x1:x2]
         plate_crop_gray = cv2.cvtColor(plate_crop_color, cv2.COLOR_BGR2GRAY)
-        plate_crop_bin = cv2.adaptiveThreshold(plate_crop_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 7)
+        
+        # Enhance contrast of the small crop before binarization
+        plate_crop_gray_enhanced = clahe.apply(plate_crop_gray) # Applying CLAHE again to the crop
+
+        plate_crop_bin = cv2.adaptiveThreshold(plate_crop_gray_enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                               cv2.THRESH_BINARY_INV, 11, 5) # Smaller C for crop
+
         if plate_crop_bin.size > 0:
             possiveis_placas_para_ocr.append((plate_crop_color, plate_crop_bin))
+            
     return possiveis_placas_para_ocr
 
 def aplicar_ocr_aos_recortes(lista_possiveis_placas_recortadas):
