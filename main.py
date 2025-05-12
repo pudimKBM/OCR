@@ -83,25 +83,40 @@ def gerar_possibilidades_mercosul_para_recorte(value: str):
 
 def processar_imagem_globalmente(imagem_original):
     imagem_cinza = cv2.cvtColor(imagem_original, cv2.COLOR_BGR2GRAY)
-    imagem_cinza_blur = cv2.bilateralFilter(imagem_cinza, 9, 75, 75)
-    imagem_limiarizada = cv2.adaptiveThreshold(
+    imagem_cinza_blur = cv2.bilateralFilter(imagem_cinza, 9, 75, 75) # Good for edge preservation
+    # This binarized image is primarily for display or if a global threshold is needed for other steps.
+    # MSER itself works on grayscale. The OCR on crops will do its own binarization.
+    imagem_limiarizada_display = cv2.adaptiveThreshold(
         imagem_cinza_blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 19, 9
     )
-    return imagem_limiarizada, imagem_cinza
+    return imagem_limiarizada_display, imagem_cinza
 
-
-# --- Mode 1: "With Cropping" (MSER-based) Functions ---
-def filter_char_candidates(bboxes, min_char_h=15, max_char_h=60, min_aspect_char=0.1, max_aspect_char=1.0):
+# --- Parameterized MSER Helper Functions ---
+def filter_char_candidates_param(bboxes, params):
+    min_char_h = params.get("char_h_min_abs", 15)
+    max_char_h = params.get("char_h_max_abs", 60)
+    min_aspect_char = params.get("char_aspect_min", 0.1)
+    max_aspect_char = params.get("char_aspect_max", 1.0)
+    
     char_candidates = []
     for (x, y, w, h) in bboxes:
-        if not (min_char_h < h < max_char_h): continue
-        aspect_ratio = w / float(h) if h > 0 else 0 # Added h>0 check
-        if not (min_aspect_char < aspect_ratio < max_aspect_char): continue
+        if not (min_char_h <= h <= max_char_h): continue
+        aspect_ratio = w / float(h) if h > 0 else 0
+        if not (min_aspect_char <= aspect_ratio <= max_aspect_char): continue
         char_candidates.append({'x': x, 'y': y, 'w': w, 'h': h, 'cx': x + w/2, 'cy': y + h/2})
     return char_candidates
-
-def group_char_candidates(char_candidates, max_dy_ratio=0.3, max_dh_ratio=0.3, max_spacing_ratio=1.5, min_chars=5, max_chars=8, min_char_h_ref=15): # Added min_char_h_ref
+def group_char_candidates_param(char_candidates, params):
     if not char_candidates: return []
+
+    max_dy_ratio = params.get("grp_dy", 0.15)
+    max_dh_ratio = params.get("grp_dh", 0.2)
+    max_spacing_ratio = params.get("grp_spacing", 0.6)
+    min_chars = params.get("grp_min_chars", 6)
+    max_chars = params.get("grp_max_chars", 8)
+    min_plate_aspect = params.get("grp_plate_ar_min", 2.5)
+    max_plate_aspect = params.get("grp_plate_ar_max", 5.5)
+    ref_char_h_for_plate_check = params.get("char_h_min_abs", 15) # Use min char height as ref
+
     char_candidates.sort(key=lambda c: (c['x'], c['y']))
     potential_plates = []
     visited = [False] * len(char_candidates)
@@ -109,30 +124,26 @@ def group_char_candidates(char_candidates, max_dy_ratio=0.3, max_dh_ratio=0.3, m
     for i in range(len(char_candidates)):
         if visited[i]: continue
         current_line = [char_candidates[i]]
-        visited[i] = True
-        avg_line_y = char_candidates[i]['cy']
-        avg_line_h = char_candidates[i]['h']
+        visited[i] = True; current_line_y_coords = [char_candidates[i]['cy']]; current_line_heights = [char_candidates[i]['h']]
 
         for j in range(i + 1, len(char_candidates)):
             if visited[j]: continue
-            cand_char = char_candidates[j]
-            prev_char = current_line[-1]
-            dy = abs(cand_char['cy'] - avg_line_y)
-            dh = abs(cand_char['h'] - avg_line_h)
+            cand_char = char_candidates[j]; prev_char = current_line[-1]
+            avg_line_y = np.mean(current_line_y_coords); avg_line_h = np.mean(current_line_heights)
+            if avg_line_h == 0: continue # Should not happen if chars have height
+            dy = abs(cand_char['cy'] - avg_line_y); dh = abs(cand_char['h'] - avg_line_h)
             dx_spacing = cand_char['x'] - (prev_char['x'] + prev_char['w'])
             
-            # Ensure avg_line_h is not zero before using it as a divisor
-            if avg_line_h == 0: continue 
-
             if (dy < avg_line_h * max_dy_ratio and \
                 dh < avg_line_h * max_dh_ratio and \
-                0 < dx_spacing < avg_line_h * max_spacing_ratio):
+                0 <= dx_spacing < avg_line_h * max_spacing_ratio and \
+                cand_char['x'] > prev_char['x'] + prev_char['w'] * 0.5): # Ensure progression
                 current_line.append(cand_char)
                 visited[j] = True
-                avg_line_y = np.mean([c['cy'] for c in current_line])
-                avg_line_h = np.mean([c['h'] for c in current_line])
-            elif dx_spacing > avg_line_h * max_spacing_ratio * 2 :
+                current_line_y_coords.append(cand_char['cy']); current_line_heights.append(cand_char['h'])
+            elif dx_spacing > avg_line_h * max_spacing_ratio * 1.5 : # If spacing is too large, new group
                  break
+        
         if min_chars <= len(current_line) <= max_chars:
             line_x_coords = [c['x'] for c in current_line]; line_y_coords = [c['y'] for c in current_line]
             line_w_coords = [c['x'] + c['w'] for c in current_line]; line_h_coords = [c['y'] + c['h'] for c in current_line]
@@ -140,79 +151,85 @@ def group_char_candidates(char_candidates, max_dy_ratio=0.3, max_dh_ratio=0.3, m
             plate_w = max(line_w_coords) - plate_x; plate_h = max(line_h_coords) - plate_y
             if plate_w > 0 and plate_h > 0:
                 plate_aspect_ratio = plate_w / float(plate_h)
-                if 2.0 < plate_aspect_ratio < 6.0 and plate_h > min_char_h_ref*0.8:
-                    potential_plates.append({'chars': current_line, 'bbox': (plate_x, plate_y, plate_w, plate_h)})
+                if min_plate_aspect < plate_aspect_ratio < max_plate_aspect and \
+                   plate_h > ref_char_h_for_plate_check * 0.7: # Plate height vs reference char height
+                    potential_plates.append({'chars': current_line, 
+                                             'bbox': (plate_x, plate_y, plate_w, plate_h),
+                                             'avg_char_h': np.mean(current_line_heights)})
     return potential_plates
 
-# In encontrar_placas_via_mser:
 
-def encontrar_placas_via_mser(imagem_original_color, imagem_cinza_input): # imagem_cinza_input is the input gray
+def encontrar_placas_via_mser_param(imagem_original_color, imagem_cinza_input, param_config):
     img_h, img_w = imagem_cinza_input.shape[:2]
 
     # 1. Contrast Enhancement (CLAHE)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    clahe_clip = param_config.get("clahe_clip", 2.0)
+    clahe_grid_w = param_config.get("clahe_grid_w", 8)
+    clahe_grid_h = param_config.get("clahe_grid_h", 8)
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_grid_w, clahe_grid_h))
     imagem_cinza_enhanced = clahe.apply(imagem_cinza_input)
     # You might want to display imagem_cinza_enhanced to see its effect
 
     # 2. Dynamic Parameter Calculation
     # These percentages are heuristics and NEED TUNING based on your typical images
     est_char_h_min_rel = 0.020 # Min char height relative to image height
-    est_char_h_max_rel = 0.080 # Max char height relative to image height
+    est_char_h_max_rel = 0.080 # Max char height relative to image height    
     abs_min_char_h_px = 15    # Absolute minimum pixel height for a char
     abs_max_char_h_px = 80    # Absolute maximum pixel height for a char
 
-    min_char_h_abs = max(abs_min_char_h_px, int(img_h * est_char_h_min_rel))
-    max_char_h_abs = min(abs_max_char_h_px, int(img_h * est_char_h_max_rel))
+    min_char_h_abs = max(param_config.get("abs_min_char_h_px", 15), 
+                         int(img_h * param_config.get("char_h_min_r", 0.025)))
+    max_char_h_abs = min(param_config.get("abs_max_char_h_px", 60), 
+                         int(img_h * param_config.get("char_h_max_r", 0.075)))
     if min_char_h_abs >= max_char_h_abs : # Safety if image is too small or percentages are off
-        min_char_h_abs = abs_min_char_h_px
-        max_char_h_abs = abs_max_char_h_px
+        min_char_h_abs = param_config.get("abs_min_char_h_px", 15)
+        max_char_h_abs = param_config.get("abs_max_char_h_px", 60)
 
 
     # Estimate MSER Area based on dynamic character height and typical aspect ratio
     # Char aspect ratio (w/h) typically 0.2 (for 'I') to 1.0 (for 'W', 'M')
-    mser_min_area = int((min_char_h_abs**2) * 0.15) 
-    mser_min_area = max(30, mser_min_area) # Absolute floor for min area
-    
-    mser_max_area = int((max_char_h_abs**2) * 1.2) 
+    mser_min_area = max(param_config.get("abs_min_mser_area_px", 30), 
+                        int((min_char_h_abs**2) * param_config.get("mser_min_area_f", 0.10)))
+    mser_max_area = min(int((max_char_h_abs**2) * param_config.get("mser_max_area_f", 1.5)), 
+                        int(img_w * img_h * param_config.get("mser_max_area_img_f", 0.02)))
     # Cap max area to avoid huge regions, e.g., 5% of total image area as an extreme upper bound
-    mser_max_area = min(mser_max_area, int(img_w * img_h * 0.05)) 
     mser_max_area = max(mser_max_area, mser_min_area + 100) # Ensure max > min
 
 
     # --- MSER Parameters (Now more dynamic) ---
     mser = cv2.MSER_create()
-    mser.setDelta(5) 
+    mser.setDelta(param_config.get("mser_delta", 5))
     mser.setMinArea(mser_min_area)
     mser.setMaxArea(mser_max_area) 
-    mser.setMaxVariation(0.25) # Can tune this, e.g. 0.2 to 0.3
-    mser.setMinDiversity(0.2)  # Can tune this, e.g. 0.1 to 0.3
+    mser.setMaxVariation(param_config.get("mser_max_var", 0.25))
+    mser.setMinDiversity(param_config.get("mser_min_div", 0.2))
     # --- End MSER Parameters ---
     
     # Detect regions on the enhanced grayscale image
     regions, bboxes = mser.detectRegions(imagem_cinza_enhanced) # Use enhanced image
     if bboxes is None or len(bboxes) == 0:
-        print("MSER found no regions or bboxes.")
+        # print("MSER found no regions or bboxes.") # Can be verbose
         return []
 
-    # --- Character Filtering Parameters (Using dynamic char_h) ---
-    # min_aspect_char, max_aspect_char are less dependent on overall image scale
-    min_aspect_char, max_aspect_char = 0.15, 1.2 
-    # --- End Character Filtering Parameters ---
-    
-    char_candidates = filter_char_candidates(bboxes, min_char_h_abs, max_char_h_abs, 
-                                             min_aspect_char, max_aspect_char)
-    if not char_candidates: print("No character candidates after MSER filtering."); return []
+    current_filter_params = {
+        "char_h_min_abs": min_char_h_abs, "char_h_max_abs": max_char_h_abs,
+        "char_aspect_min": param_config.get("char_aspect_min", 0.15),
+        "char_aspect_max": param_config.get("char_aspect_max", 1.0)
+    }
+    char_candidates = filter_char_candidates_param(bboxes, current_filter_params)
+    if not char_candidates: return []
 
-    # --- Grouping Parameters (Ratios should be more stable across scales than absolute px values) ---
-    max_dy_ratio_grp = 0.3      # Max Y-center diff ratio (to avg char height of the line)
-    max_dh_ratio_grp = 0.3      # Max height diff ratio
-    max_spacing_ratio_grp = 1.0 # Max horizontal spacing ratio (to avg char height of the line)
-    min_chars_plate, max_chars_plate = 6, 8 # Allow 6 to catch cases where one char is missed
-    # --- End Grouping Parameters ---
-
-    plate_groups = group_char_candidates(char_candidates, max_dy_ratio_grp, max_dh_ratio_grp, 
-                                        max_spacing_ratio_grp, min_chars_plate, max_chars_plate, 
-                                        min_char_h_abs) # Pass min_char_h_abs for reference in plate_h check
+    current_grouping_params = {
+        "grp_dy": param_config.get("grp_dy", 0.15), "grp_dh": param_config.get("grp_dh", 0.2),
+        "grp_spacing": param_config.get("grp_spacing", 0.6),
+        "grp_min_chars": param_config.get("grp_min_chars", 6),
+        "grp_max_chars": param_config.get("grp_max_chars", 8),
+        "grp_plate_ar_min": param_config.get("grp_plate_ar_min", 2.5),
+        "grp_plate_ar_max": param_config.get("grp_plate_ar_max", 5.5),
+        "char_h_min_abs": min_char_h_abs # Pass ref char height for plate height check
+    }
+    plate_groups = group_char_candidates_param(char_candidates, current_grouping_params)
+    if not plate_groups: return []
 
     # ... (rest of the function: cropping, binarizing crop, returning list for OCR) ...
     # The binarization of the crop might also benefit from CLAHE on plate_crop_gray before thresholding
@@ -223,20 +240,23 @@ def encontrar_placas_via_mser(imagem_original_color, imagem_cinza_input): # imag
     possiveis_placas_para_ocr = []
     for group in plate_groups:
         x, y, w, h = group['bbox']
-        padding = int(min(w,h) * 0.1) # Dynamic padding: 10% of min dimension of group
-        padding = max(3, padding) # Min 3px padding
-        padding = min(10,padding) # Max 10px padding
+        avg_char_h_group = group.get('avg_char_h', min_char_h_abs) # Use avg char height of group for padding
+        padding = max(3, min(10, int(avg_char_h_group * param_config.get("crop_padding_f", 0.15))))
 
         x1=max(0,x-padding); y1=max(0,y-padding); x2=min(img_w,x+w+padding); y2=min(img_h,y+h+padding)
-        if (x2 - x1) < 20 or (y2 - y1) < 10: continue 
+        # Ensure crop is reasonably sized based on expected character dimensions
+        if (x2-x1) < (param_config.get("grp_min_chars",6) * min_char_h_abs * param_config.get("char_aspect_min",0.15)) or \
+           (y2-y1) < (min_char_h_abs * 0.7): continue
+        
         plate_crop_color = imagem_original_color[y1:y2, x1:x2]
         plate_crop_gray = cv2.cvtColor(plate_crop_color, cv2.COLOR_BGR2GRAY)
         
         # Enhance contrast of the small crop before binarization
         plate_crop_gray_enhanced = clahe.apply(plate_crop_gray) # Applying CLAHE again to the crop
-
         plate_crop_bin = cv2.adaptiveThreshold(plate_crop_gray_enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                               cv2.THRESH_BINARY_INV, 11, 5) # Smaller C for crop
+                                               cv2.THRESH_BINARY_INV, 
+                                               param_config.get("crop_adapt_block", 11), 
+                                               param_config.get("crop_adapt_c", 4))
 
         if plate_crop_bin.size > 0:
             possiveis_placas_para_ocr.append((plate_crop_color, plate_crop_bin))
@@ -290,66 +310,117 @@ def aplicar_ocr_aos_recortes(lista_possiveis_placas_recortadas):
         if placa_base_para_correcao: return f"Raw OCR (MSER crop): {placa_base_para_correcao}", placa_recortada_original_color, placa_recortada_processada_ocr
     return "No plate detected (MSER crop)", None, None
 
+# This function is used by MSER mode
 def exibir_e_salvar_resultado_com_recorte(*args):
     img_orig, img_processed_display, img_crop_color, img_crop_ocr, text_plate, out_dir, base_fname = args
     os.makedirs(out_dir, exist_ok=True)
     if img_orig is not None: cv2.imwrite(os.path.join(out_dir, f"{base_fname}_01_original.png"), img_orig)
     if img_processed_display is not None: cv2.imwrite(os.path.join(out_dir, f"{base_fname}_02_processed_for_detection.png"), img_processed_display)
     if img_crop_color is not None: cv2.imwrite(os.path.join(out_dir, f"{base_fname}_03_mser_plate_color.png"), img_crop_color)
-    if img_crop_ocr is not None: cv2.imwrite(os.path.join(out_dir, f"{base_fname}_04_mser_plate_ocr.png"), img_crop_ocr)
-    fig = plt.figure(figsize=(12,9)); plt.suptitle(f"Plate OCR (MSER Crop Mode) for '{base_fname}':\n{text_plate}", fontsize=14)
+    if img_crop_ocr is not None and img_crop_ocr.size > 0: cv2.imwrite(os.path.join(out_dir, f"{base_fname}_04_mser_plate_ocr.png"), img_crop_ocr)
+    
+    # Ensure text_plate is a string for suptitle
+    display_text_plate = str(text_plate) if text_plate is not None else "N/A"
+
+    fig = plt.figure(figsize=(12,9)); 
+    plt.suptitle(f"Plate OCR (MSER Crop Mode) for '{base_fname}':\n{display_text_plate}", fontsize=14)
+    
     ax_map = {
         (0,0):("1. Original",img_orig,'rgb'), 
         (0,1):("2. Grayscale for MSER",img_processed_display,'gray'), 
         (1,0):("3. MSER Detected Plate (Color)",img_crop_color,'rgb'), 
         (1,1):("4. MSER Plate for OCR",img_crop_ocr,'gray') 
     }
+
     for (r,c),(title,data,cmap_type) in ax_map.items():
         ax=plt.subplot2grid((2,2),(r,c))
         if data is not None and data.size>0: 
             try:
                 if cmap_type=='rgb': ax.imshow(cv2.cvtColor(data,cv2.COLOR_BGR2RGB))
                 else: ax.imshow(data,cmap='gray')
-            except Exception as e: print(f"Error displaying {title}: {e}")
+            except Exception as e: 
+                print(f"Error displaying {title} for {base_fname}: {e}")
+                ax.text(0.5,0.5,'Display Error',ha='center',va='center',color='red')
         else: ax.text(0.5,0.5,'No Image Data',ha='center',va='center')
         ax.set_title(title); ax.axis('off')
+    
     plt.tight_layout(rect=[0,0.03,1,0.93]); fig_path=os.path.join(out_dir,f"{base_fname}_00_fig_mser_crop.png"); plt.savefig(fig_path)
-    print(f"MSER Crop mode outputs saved in: {out_dir}"); plt.show()
+    print(f"MSER Crop mode outputs saved in: {out_dir}"); 
+    # plt.show() # Comment out if running many images to avoid blocking
+    plt.close(fig) # Close the figure to free memory
 
-def detectar_placa_com_mser_crop(caminho_da_imagem, output_base_dir): 
+# --- Orchestrator for MSER "Crop" Mode with Tuning ---
+def detectar_placa_com_mser_crop_tuned(caminho_da_imagem, output_base_dir): 
     img_orig = cv2.imread(caminho_da_imagem)
-    if img_orig is None: 
-        print(f"Error reading {caminho_da_imagem}")
-        return
+    if img_orig is None: print(f"Error reading {caminho_da_imagem}"); return
     
     base_fname = os.path.splitext(os.path.basename(caminho_da_imagem))[0]
     spec_out_dir = os.path.join(output_base_dir, base_fname)
+    os.makedirs(spec_out_dir, exist_ok=True)
 
-    imagem_cinza = cv2.cvtColor(img_orig, cv2.COLOR_BGR2GRAY)
-    
-    lista_recortes_mser = encontrar_placas_via_mser(img_orig, imagem_cinza)
+    _, imagem_cinza = processar_imagem_globalmente(img_orig) # Get grayscale for MSER
 
-    # Initialize variables with default values
-    texto_pl = "No MSER groups found or processed." # Default message
-    rec_col = None
-    rec_ocr = None
+    # --- Define Parameter Sets for Tuning ---
+    parameter_configurations = [
+        # Config 1: Defaultish, slightly stricter from previous
+        {"name": "config1_stricter", "mser_delta": 5, "mser_min_area_f": 0.10, "mser_max_area_f": 1.5, "mser_max_var": 0.25, "mser_min_div": 0.2,
+         "char_h_min_r": 0.025, "char_h_max_r": 0.075, "char_aspect_min": 0.15, "char_aspect_max": 1.0, "abs_min_char_h_px": 15, "abs_max_char_h_px": 60,
+         "grp_dy": 0.15, "grp_dh": 0.2, "grp_spacing": 0.6, "grp_min_chars": 6, "grp_max_chars": 8, "grp_plate_ar_min": 2.5, "grp_plate_ar_max": 5.5,
+         "crop_padding_f": 0.15, "crop_adapt_block": 11, "crop_adapt_c": 4, "clahe_clip": 2.0, "clahe_grid_w": 8, "clahe_grid_h": 8,
+         "abs_min_mser_area_px": 30, "mser_max_area_img_f": 0.02},
+        # Config 2: More relaxed character filtering, tighter MSER area
+        {"name": "config2_relax_charFilt", "mser_delta": 5, "mser_min_area_f": 0.08, "mser_max_area_f": 1.2, "mser_max_var": 0.3, "mser_min_div": 0.15,
+         "char_h_min_r": 0.02, "char_h_max_r": 0.1, "char_aspect_min": 0.1, "char_aspect_max": 1.2, "abs_min_char_h_px": 12, "abs_max_char_h_px": 70,
+         "grp_dy": 0.2, "grp_dh": 0.25, "grp_spacing": 0.8, "grp_min_chars": 5, "grp_max_chars": 8, "grp_plate_ar_min": 2.0, "grp_plate_ar_max": 6.0,
+         "crop_padding_f": 0.20, "crop_adapt_block": 13, "crop_adapt_c": 5, "clahe_clip": 2.5, "clahe_grid_w": 8, "clahe_grid_h": 8,
+         "abs_min_mser_area_px": 25, "mser_max_area_img_f": 0.025},
+        # Config 3: Different MSER sensitivity, wider spacing for grouping
+        {"name": "config3_diff_mser_sens", "mser_delta": 3, "mser_min_area_f": 0.12, "mser_max_area_f": 1.6, "mser_max_var": 0.2, "mser_min_div": 0.25,
+         "char_h_min_r": 0.022, "char_h_max_r": 0.08, "char_aspect_min": 0.12, "char_aspect_max": 1.1, "abs_min_char_h_px": 14, "abs_max_char_h_px": 65,
+         "grp_dy": 0.25, "grp_dh": 0.3, "grp_spacing": 1.0, "grp_min_chars": 6, "grp_max_chars": 8, "grp_plate_ar_min": 2.2, "grp_plate_ar_max": 5.8,
+         "crop_padding_f": 0.10, "crop_adapt_block": 11, "crop_adapt_c": 3, "clahe_clip": 1.5, "clahe_grid_w": 6, "clahe_grid_h": 6,
+         "abs_min_mser_area_px": 35, "mser_max_area_img_f": 0.015},
+    ]
 
-    if lista_recortes_mser: 
-        print(f"Found {len(lista_recortes_mser)} MSER candidate regions for OCR.")
-        # aplicar_ocr_aos_recortes will iterate and return the first good one or best attempt
-        # Ensure the variables assigned here match those used below
-        texto_pl_from_ocr, rec_col_from_ocr, rec_ocr_from_ocr = aplicar_ocr_aos_recortes(lista_recortes_mser)
+    found_plate_successfully = False
+    best_ocr_text, best_rec_col, best_rec_ocr = "Tuning: No plate found.", None, None
+
+    for i, current_params in enumerate(parameter_configurations):
+        print(f"\nAttempt {i+1}/{len(parameter_configurations)} with MSER config: '{current_params['name']}'")
         
-        # Update if OCR provided results
-        texto_pl = texto_pl_from_ocr
-        rec_col = rec_col_from_ocr
-        rec_ocr = rec_ocr_from_ocr
-    else: 
-        print("No MSER candidate regions found after filtering and grouping.")
-        # texto_pl, rec_col, rec_ocr will retain their default values initialized above
-    
-    # CORRECTED LINE: Use 'texto_pl' instead of 'text_pl'
-    exibir_e_salvar_resultado_com_recorte(img_orig, imagem_cinza, rec_col, rec_ocr, texto_pl, spec_out_dir, base_fname)
+        lista_recortes_mser = encontrar_placas_via_mser_param(img_orig, imagem_cinza, current_params)
+
+        if lista_recortes_mser:
+            # print(f"  MSER generated {len(lista_recortes_mser)} candidates for OCR with config '{current_params['name']}'.") # Verbose
+            texto_pl_ocr_result, rec_col_from_ocr, rec_ocr_from_ocr = aplicar_ocr_aos_recortes(lista_recortes_mser)
+            
+            best_ocr_text = texto_pl_ocr_result # Store last attempt
+            best_rec_col = rec_col_from_ocr
+            best_rec_ocr = rec_ocr_from_ocr
+
+            first_line_ocr = str(texto_pl_ocr_result).split('\n')[0] if texto_pl_ocr_result else ""
+            is_valid_plate = encontrar_placa(first_line_ocr) or encontrar_placa_mercosul(first_line_ocr)
+            
+            if is_valid_plate and not "Raw OCR" in first_line_ocr and not "No plate detected" in first_line_ocr and not "Tuning:" in first_line_ocr : 
+                print(f"  SUCCESS with config '{current_params['name']}'! Plate: {first_line_ocr}")
+                success_output_dir = os.path.join(spec_out_dir, f"success_{current_params['name']}")
+                exibir_e_salvar_resultado_com_recorte(img_orig, imagem_cinza, rec_col_from_ocr, rec_ocr_from_ocr, 
+                                                      texto_pl_ocr_result, success_output_dir, base_fname)
+                found_plate_successfully = True
+                break 
+            else:
+                print(f"  Config '{current_params['name']}' OCR: {str(texto_pl_ocr_result)[:60]}...")
+        else:
+            print(f"  No MSER candidates found with config '{current_params['name']}'.")
+            if i == len(parameter_configurations) -1 and not found_plate_successfully: # If last attempt and still no success
+                 best_ocr_text = f"No MSER candidates from any config for {base_fname}."
+
+
+    if not found_plate_successfully:
+        print(f"\nCould not find a valid plate for {base_fname} after trying {len(parameter_configurations)} MSER configurations.")
+        final_display_text = best_ocr_text if best_ocr_text else "Tuning failed to find plate."
+        exibir_e_salvar_resultado_com_recorte(img_orig, imagem_cinza, best_rec_col, best_rec_ocr, 
+                                              final_display_text, os.path.join(spec_out_dir, "tuning_final_attempt"), base_fname)
 
 
 # --- Mode 2: "Without Cropping" Functions ---
@@ -385,7 +456,8 @@ def exibir_e_salvar_resultado_sem_recorte(*args):
     if img_ocr_proc is not None and img_ocr_proc.size>0: ax2.imshow(img_ocr_proc,cmap='gray')
     else: ax2.text(0.5,0.5,'No Processed Image',ha='center',va='center')
     ax2.set_title("2. Processed for OCR"); ax2.axis('off')
-    plt.tight_layout(rect=[0,0.03,1,0.93]); fig_path=os.path.join(out_dir,f"{base_fname}_00_fig_nocrop.png"); plt.savefig(fig_path)
+    plt.tight_layout(rect=[0,0.03,1,0.93]); fig_path=os.path.join(out_dir,f"{base_fname}_00_fig_nocrop.png"); 
+    plt.savefig(fig_path); plt.close(fig) # Save and close
     print(f"No-crop mode outputs saved in: {out_dir}"); plt.show()
 
 def detectar_placa_sem_recorte(caminho_da_imagem, output_base_dir):
@@ -502,7 +574,8 @@ def exibir_e_salvar_resultado_janela_deslizante(*args):
     else: ax3.text(0.5,0.5,'No Patch',ha='center',va='center')
     ax3.set_title("3. Binarized Patch for OCR"); ax3.axis('off')
     plt.tight_layout(rect=[0,0.03,1,0.93]); fig_path=os.path.join(out_dir,f"{base_fname}_00_fig_sliding_window.png"); plt.savefig(fig_path)
-    print(f"Sliding window outputs saved in: {out_dir}"); plt.show()
+    print(f"Sliding window outputs saved in: {out_dir}"); 
+    plt.close(fig) # Save and close
 
 def detectar_placa_via_janela_deslizante(caminho_da_imagem, output_base_dir):
     imagem_original=cv2.imread(caminho_da_imagem)
@@ -518,7 +591,7 @@ def detectar_placa_via_janela_deslizante(caminho_da_imagem, output_base_dir):
 if __name__ == "__main__":
     multiprocessing.freeze_support() 
     parser = argparse.ArgumentParser(description="License Plate OCR with selectable processing mode.")
-    parser.add_argument('--mode', type=str, default='crop', choices=['crop', 'nocrop', 'sliding_window'],
+    parser.add_argument('--mode', type=str, default='crop', choices=['crop', 'nocrop', 'sliding_window', 'all'],
                         help="Processing mode. 'crop' (MSER based), 'nocrop', 'sliding_window'. Default is 'crop'.")
     parser.add_argument('--images_folder', type=str, default='images',
                         help="Folder containing input images. Default is 'images'.")
@@ -536,23 +609,38 @@ if __name__ == "__main__":
         ]
         if not lista_de_arquivos_de_imagem: print(f"No image files found in '{pasta_de_imagens_entrada}'.")
         else:
-            if current_mode == 'crop': 
-                OUTPUT_BASE_DIR = "output_images_mser_crop_v2" # Updated dir name
-                print(f"--- Mode: With Cropping (MSER based) ---")
-                detect_func = detectar_placa_com_mser_crop 
+            modes_to_run = []
+            if current_mode == 'all':
+                modes_to_run = [
+                    ('crop', "output_images_mser_crop_tuned", detectar_placa_com_mser_crop_tuned),
+                    ('nocrop', "output_images_no_crop_v2", detectar_placa_sem_recorte),
+                    ('sliding_window', "output_images_sliding_window_mp_v2", detectar_placa_via_janela_deslizante)
+                ]
+            elif current_mode == 'crop': 
+                modes_to_run.append(('crop', "output_images_mser_crop_tuned", detectar_placa_com_mser_crop_tuned))
             elif current_mode == 'nocrop':
-                OUTPUT_BASE_DIR = "output_images_no_crop_v2"
-                print(f"--- Mode: No Cropping (OCR Full Image) ---")
-                detect_func = detectar_placa_sem_recorte
-            else: # sliding_window
-                OUTPUT_BASE_DIR = "output_images_sliding_window_mp_v2" 
-                print(f"--- Mode: Sliding Window OCR (Multiprocessed) ---")
-                detect_func = detectar_placa_via_janela_deslizante
-            
-            os.makedirs(OUTPUT_BASE_DIR, exist_ok=True)
-            print(f"Output will be saved in subdirectories under: '{OUTPUT_BASE_DIR}'")
+                modes_to_run.append(('nocrop', "output_images_no_crop_v2", detectar_placa_sem_recorte))
+            elif current_mode == 'sliding_window':
+                modes_to_run.append(('sliding_window', "output_images_sliding_window_mp_v2", detectar_placa_via_janela_deslizante))
 
             for nome_arquivo_imagem in lista_de_arquivos_de_imagem:
                 caminho_completo_imagem = os.path.join(pasta_de_imagens_entrada, nome_arquivo_imagem)
-                print(f"\nProcessing: {caminho_completo_imagem} (Mode: {current_mode})...")
-                detect_func(caminho_completo_imagem, OUTPUT_BASE_DIR)
+                
+                for mode_name, output_dir_name, detect_func in modes_to_run:
+                    print(f"\nProcessing: {caminho_completo_imagem} (Mode: {mode_name})...")
+                    OUTPUT_BASE_DIR_MODE = output_dir_name
+                    os.makedirs(OUTPUT_BASE_DIR_MODE, exist_ok=True)
+                    print(f"Output for this mode will be saved in subdirectories under: '{OUTPUT_BASE_DIR_MODE}'")
+                    
+                    try:
+                        start_time_img = time.time()
+                        detect_func(caminho_completo_imagem, OUTPUT_BASE_DIR_MODE)
+                        end_time_img = time.time()
+                        print(f"Finished processing {nome_arquivo_imagem} with mode '{mode_name}' in {end_time_img - start_time_img:.2f} seconds.")
+                    except Exception as e:
+                        print(f"ERROR processing {nome_arquivo_imagem} with mode '{mode_name}': {e}")
+                        import traceback
+                        traceback.print_exc()
+                    plt.close('all') # Close any lingering matplotlib figures
+            
+            print("\nAll processing finished.")
